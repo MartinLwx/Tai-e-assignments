@@ -33,21 +33,10 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.AssignStmt;
-import pascal.taie.ir.stmt.If;
-import pascal.taie.ir.stmt.Stmt;
-import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.ir.exp.*;
+import pascal.taie.ir.stmt.*;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -69,9 +58,96 @@ public class DeadCodeDetection extends MethodAnalysis {
                 ir.getResult(LiveVariableAnalysis.ID);
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
-        // TODO - finish me
-        // Your task is to recognize dead code in ir and add it to deadCode
+
+        // Let's find the dead assignments first
+        for (Stmt stmt : cfg.getNodes()) {
+            if (!(stmt instanceof AssignStmt<?, ?>)) continue;
+            stmt.getDef().ifPresent(v -> {
+                boolean hasNoSideEffect = true;
+                for (RValue use : stmt.getUses()) {
+                    hasNoSideEffect &= DeadCodeDetection.hasNoSideEffect(use);
+                }
+                if (hasNoSideEffect && (!liveVars.getOutFact(stmt).contains((Var) v))) {
+                    deadCode.add(stmt);
+                }
+            });
+        }
+
+        // Let's find unreachable code then
+        for (Stmt stmt : cfg.getNodes()) {
+            if (stmt instanceof If) {
+                handleIf(stmt, constants, cfg, deadCode);
+            } else if (stmt instanceof SwitchStmt) {
+                handleSwitch(stmt, constants, cfg, deadCode);
+            }
+        }
+
+        // Finally, let's traverse the CFG and mark unvisited nodes as dead
+        Set<Stmt> visited = new HashSet<>();
+        Queue<Stmt> deque = new LinkedList<>();
+        deque.add(cfg.getEntry());
+        while (!deque.isEmpty()) {
+            Stmt current = deque.poll();
+            visited.add(current);
+            if ((current instanceof If) || (current instanceof SwitchStmt)) {
+                deque.addAll(cfg.getSuccsOf(current).stream().filter(stmt -> !deadCode.contains(stmt)).filter(stmt -> !visited.contains(stmt)).toList());
+            } else {
+                deque.addAll(cfg.getSuccsOf(current).stream().filter(stmt -> !visited.contains(stmt)).toList());
+            }
+        }
+
+        deadCode.addAll(cfg.getNodes().stream().filter(stmt -> !visited.contains(stmt)).toList());
+        // Non-interest
+        deadCode.remove(cfg.getEntry());
+        deadCode.remove(cfg.getExit());
+
         return deadCode;
+    }
+
+    private static void handleSwitch(Stmt stmt, DataflowResult<Stmt, CPFact> constants, CFG<Stmt> cfg, Set<Stmt> deadCode) {
+        Var variable =  ((SwitchStmt) stmt).getVar();
+        Value result = ConstantPropagation.evaluate(variable, constants.getOutFact(stmt));
+        if (result.isConstant()) {
+            int constantValue = result.getConstant();
+            List<Integer> caseValues = ((SwitchStmt) stmt).getCaseValues();
+            int currentCase = 0;
+            boolean hasMatchedCase = false;
+            for (Edge<Stmt> edge : cfg.getOutEdgesOf(stmt)) {
+                if (edge.getKind() == Edge.Kind.SWITCH_CASE) {
+                    if (caseValues.get(currentCase) != constantValue) {
+                        deadCode.add(edge.getTarget());
+                    } else {
+                        hasMatchedCase = true;
+                    }
+                    currentCase++;
+                }
+            }
+            // Only add default branch when hasMatchedCase
+            if (hasMatchedCase) {
+                deadCode.add(((SwitchStmt) stmt).getDefaultTarget());
+            }
+        }
+    }
+
+    private static void handleIf(Stmt stmt, DataflowResult<Stmt, CPFact> constants, CFG<Stmt> cfg, Set<Stmt> deadCode) {
+        ConditionExp condition = ((If) stmt).getCondition();
+        Value result = ConstantPropagation.evaluate(condition, constants.getOutFact(stmt));
+
+        if (result.equals(Value.makeConstant(1))) {
+            // always true
+            for (Edge<Stmt> edge : cfg.getOutEdgesOf(stmt)) {
+                if (edge.getKind() == Edge.Kind.IF_FALSE) {
+                    deadCode.add(edge.getTarget());
+                }
+            }
+        } else if (result.equals(Value.makeConstant(0))) {
+            // always false
+            for (Edge<Stmt> edge : cfg.getOutEdgesOf(stmt)) {
+                if (edge.getKind() == Edge.Kind.IF_TRUE) {
+                    deadCode.add(edge.getTarget());
+                }
+            }
+        }
     }
 
     /**
