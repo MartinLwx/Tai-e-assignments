@@ -22,10 +22,17 @@
 
 package pascal.taie.analysis.dataflow.inter;
 
+import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
+import pascal.taie.analysis.graph.cfg.Edge;
+import pascal.taie.analysis.graph.icfg.CallEdge;
+import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.ICFG;
+import pascal.taie.analysis.graph.icfg.ICFGEdge;
 import pascal.taie.util.collection.SetQueue;
 
+import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -59,10 +66,40 @@ class InterSolver<Method, Node, Fact> {
     }
 
     private void initialize() {
-        // TODO - finish me
+        Set<Node> entryNodeSet = new HashSet<>();
+        icfg.entryMethods().forEach(method -> {
+            Node entryNode = icfg.getEntryOf(method);
+            entryNodeSet.add(entryNode);
+            result.setInFact(entryNode, analysis.newInitialFact());
+            result.setOutFact(entryNode, analysis.newBoundaryFact(entryNode));
+        });
+        for (Node node : icfg) {
+            if (!entryNodeSet.contains(node)) {
+                result.setInFact(node, analysis.newInitialFact());
+                result.setOutFact(node, analysis.newInitialFact());
+            }
+        }
     }
 
     private void doSolve() {
-        // TODO - finish me
+        Queue<Node> worklist = new LinkedList<>(icfg.getNodes());
+        while (!worklist.isEmpty()) {
+            Node current = worklist.poll();
+            // System.out.println("==================");
+            // System.out.println("Handling " + current);
+
+            // System.out.println("Before: " + result.getInFact(current));
+            for (ICFGEdge<Node> edge : icfg.getInEdgesOf(current)) {
+                // System.out.println("\t" + "handling: " + edge);
+                Fact newOut = analysis.transferEdge(edge, result.getOutFact(edge.getSource()));
+                analysis.meetInto(newOut, result.getInFact(current));
+            }
+            // System.out.println("meet: " + result.getInFact(current));
+
+            if (analysis.transferNode(current, result.getInFact(current), result.getOutFact(current))) {
+                worklist.addAll(icfg.getSuccsOf(current));
+            }
+            // System.out.println("final: " + result.getInFact(current));
+        }
     }
 }
