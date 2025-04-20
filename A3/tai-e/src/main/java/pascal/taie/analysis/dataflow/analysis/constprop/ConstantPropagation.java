@@ -94,37 +94,25 @@ public class ConstantPropagation extends
 
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
-        if (!(stmt instanceof DefinitionStmt<?, ?>) || stmt.getDef().isEmpty()) {
-            // Identity Function
-            // if (in != null) {
-            //     out.copyFrom(in);
-            // }
-            out.copyFrom(in);
-            return false;
+        CPFact newOut = in.copy();
+        if (stmt instanceof DefinitionStmt<?, ?> definitionStmt) {
+            LValue lhs = definitionStmt.getLValue();
+            RValue rhs = definitionStmt.getRValue();
+            if (lhs instanceof Var lhsVar) {
+                if (canHoldInt(lhsVar)) {
+                    newOut.remove(lhsVar);
+                    Value newValue = evaluate(rhs, newOut);
+                    newOut.update(lhsVar, newValue);
+                }
+            }
         }
-
-        // Create temporary CPFact
-        CPFact newOut = new CPFact();
-        newOut.copyFrom(in);
-
-        Var lhs = (Var) stmt.getDef().get();
-
-        // Kill defined variable ifPresent
-        newOut.remove(lhs);
-
-        // Calculate the gen set
-        for (RValue use : stmt.getUses()) {
-            newOut.update(lhs, ConstantPropagation.evaluate(use, newOut));
-        }
-
-        if (newOut.equals(in)) {
+        if (newOut.equals(out)) {
             return false;
         } else {
             out.clear();
             out.copyFrom(newOut);
             return true;
         }
-
     }
 
     /**
@@ -146,7 +134,7 @@ public class ConstantPropagation extends
     }
 
     public static Value handleBinary(Value lhs, Value rhs, BinaryExp exp, CPFact in) {
-        if (lhs.isNAC() && !rhs.isNAC() || !lhs.isNAC() && rhs.isNAC()) {
+        if (lhs.isNAC() || rhs.isNAC()) {
             return Value.getNAC();
         } else if (lhs.isConstant() && rhs.isConstant()) {
             int v1 = lhs.getConstant();
